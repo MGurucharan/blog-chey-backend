@@ -1,5 +1,3 @@
-// index.js
-
 import express from "express";
 import mongoose from "mongoose";
 import Item from "./models/Item.js";
@@ -19,11 +17,10 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const API_KEY = process.env.OPENAI_API_KEY;
 
-// Fix __dirname for ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ====== Middlewares ======
+// ---------- Middlewares ----------
 app.use(
   cors({
     origin: "http://localhost:5173",
@@ -31,14 +28,15 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use("/uploads", express.static("uploads"));
 
-// ====== MongoDB Connection ======
+// ---------- MongoDB Connection ----------
 mongoose.connect(process.env.MONGO_URI);
 
-// ====== Multer Config ======
+// ---------- Multer Config ----------
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, "uploads/");
@@ -47,19 +45,67 @@ const storage = multer.diskStorage({
     cb(null, Date.now() + "-" + file.originalname);
   },
 });
+
 const upload = multer({
   storage: storage,
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
 });
 
-// ====== CRUD Routes ======
+// ---------- Utility ----------
+const sanitizePrompt = (prompt) => {
+  const noImagePrompt = prompt.replace(
+    /<img[^>]+src="data:image\/[^">]+"[^>]*>/g,
+    "[image]"
+  );
+  const words = noImagePrompt.split(/\s+/);
+  return words.length > 1000 ? words.slice(0, 1000).join(" ") : noImagePrompt;
+};
 
-// Add document
+// ---------- Routes ----------
+
+// Root check
+app.get("/", (req, res) => {
+  res.send("Server with OpenAI + MongoDB API is running.");
+});
+
+// ===== OpenAI Proxy =====
+app.post("/openai-api/openai", async (req, res) => {
+  const { prompt } = req.body;
+  try {
+    const trimmedPrompt = sanitizePrompt(prompt);
+
+    const response = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        model: "gpt-3.5-turbo",
+        messages: [{ role: "user", content: trimmedPrompt }],
+        max_tokens: 300,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${API_KEY}`,
+        },
+      }
+    );
+
+    res.json(response.data);
+  } catch (error) {
+    console.error("OpenAI Error:", error.response?.data || error.message);
+    res.status(500).json({
+      error: error.response?.data?.error?.message || "Something went wrong",
+    });
+  }
+});
+
+// ===== Blog/Item APIs =====
 app.post("/api/senddocument", upload.single("image"), async (req, res) => {
   try {
     let imageUrl = null;
     if (req.file) {
-      imageUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
+      imageUrl = `${req.protocol}://${req.get("host")}/uploads/${
+        req.file.filename
+      }`;
     }
     const { title, content, summary } = req.body;
     await Item.insertMany([{ title, content, imageUrl, summary }]);
@@ -70,7 +116,6 @@ app.post("/api/senddocument", upload.single("image"), async (req, res) => {
   }
 });
 
-// Upload + Process Image
 app.post("/api/upload-image", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) throw new Error("No file uploaded");
@@ -112,7 +157,6 @@ app.post("/api/upload-image", upload.single("image"), async (req, res) => {
   }
 });
 
-// Get all items
 app.get("/api/items", async (req, res) => {
   try {
     const items = await Item.find({}, "title content summary");
@@ -123,19 +167,17 @@ app.get("/api/items", async (req, res) => {
   }
 });
 
-// Get item by ID
 app.get("/api/items/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const item = await Item.findById(id);
-    if (!item) return res.status(404).json({ message: "Item not found " });
+    if (!item) return res.status(404).json({ message: "Item not found" });
     res.json(item);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 });
 
-// Update item
 app.put("/api/update/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -144,10 +186,10 @@ app.put("/api/update/:id", async (req, res) => {
     res.status(200).json({ message: "Successfully updated the Blog!" });
   } catch (error) {
     console.log({ Error: error.message });
+    res.status(500).json({ error: "Update failed" });
   }
 });
 
-// Delete item
 app.delete("/api/delete/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -157,11 +199,10 @@ app.delete("/api/delete/:id", async (req, res) => {
     res.status(200).json({ message: "Successfully deleted the blog!" });
   } catch (error) {
     console.log({ Error: error.message });
-    res.status(500).json({ error: "Something went wrong while deleting the blog." });
+    res.status(500).json({ error: "Something went wrong while deleting" });
   }
 });
 
-// Add feedback
 app.post("/api/feedbackpost/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -177,46 +218,7 @@ app.post("/api/feedbackpost/:id", async (req, res) => {
   }
 });
 
-// ====== OpenAI Proxy ======
-const sanitizePrompt = (prompt) => {
-  const noImagePrompt = prompt.replace(
-    /<img[^>]+src="data:image\/[^">]+"[^>]*>/g,
-    "[image]"
-  );
-  const words = noImagePrompt.split(/\s+/);
-  return words.length > 1000 ? words.slice(0, 1000).join(" ") : noImagePrompt;
-};
-
-app.get("/", (req, res) => {
-  res.send("Backend + OpenAI server is running.");
-});
-
-app.post("/openai-api/openai", async (req, res) => {
-  const { prompt } = req.body;
-  try {
-    const trimmedPrompt = sanitizePrompt(prompt);
-    const response = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        model: "gpt-3.5-turbo",
-        messages: [{ role: "user", content: trimmedPrompt }],
-        max_tokens: 300,
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${API_KEY}`,
-        },
-      }
-    );
-    res.json(response.data);
-  } catch (error) {
-    console.error("OpenAI Error:", error.response?.data || error.message);
-    res.status(500).json({
-      error: error.response?.data?.error?.message || "Something went wrong",
-    });
-  }
-});
-
-// ====== Start Server ======
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+// ---------- Start Server ----------
+app.listen(PORT, () =>
+  console.log(`Server running on http://localhost:${PORT}`)
+);
